@@ -1,0 +1,308 @@
+FUNCTION Z_IDOC_INPUT_ZPREGRE
+  IMPORTING
+    VALUE(INPUT_METHOD) TYPE BDWFAP_PAR-INPUTMETHD
+    VALUE(MASS_PROCESSING) TYPE BDWFAP_PAR-MASS_PROC
+  EXPORTING
+    VALUE(WORKFLOW_RESULT) TYPE BDWFAP_PAR-RESULT
+    VALUE(APPLICATION_VARIABLE) TYPE BDWFAP_PAR-APPL_VAR
+    VALUE(IN_UPDATE_TASK) TYPE BDWFAP_PAR-UPDATETASK
+    VALUE(CALL_TRANSACTION_DONE) TYPE BDWFAP_PAR-CALLTRANS
+  TABLES
+    IDOC_CONTRL TYPE EDIDC_TT
+    IDOC_DATA TYPE EDIDD_TT
+    IDOC_STATUS TYPE BDTIDOCSTA
+    RETURN_VARIABLES TYPE BDTWFRETVA
+    SERIALIZATION_INFO TYPE BDTI_SER
+  EXCEPTIONS
+    WRONG_FUNCTION_CALLED.
+
+
+
+  in_update_task = ''.
+  CLEAR call_transaction_done.
+* check if the function is called correctly                            *
+  READ TABLE idoc_contrl INDEX 1.
+  IF sy-subrc <> 0.
+    EXIT.
+  ELSEIF idoc_contrl-mestyp <> 'ZPREGRE'.
+    RAISE wrong_function_called.
+  ENDIF.
+
+  g_idoc_control = idoc_contrl.
+
+  PERFORM  f_map_into_data_tables
+    USING idoc_contrl[]
+          idoc_data[]
+    CHANGING gt_zpregre.
+
+  PERFORM f_transcoding
+    CHANGING gt_zpregre.
+
+  PERFORM f_update_db
+    USING gt_zpregre
+          idoc_contrl-docnum
+    CHANGING idoc_status[].
+
+
+ENDFUNCTION.
+*---------------------------------------------------------------------*
+FORM f_map_into_data_tables
+    USING idoc_contrl TYPE  edidc_tt
+          idoc_data TYPE  edidd_tt
+    CHANGING ch_zpregre TYPE zpregre_t.
+  DATA: lt_edidd    TYPE edidd_tt,
+        ls_z1pregre TYPE z1pregre,
+        ls_pregre   TYPE zpregre.
+  FIELD-SYMBOLS: <c> TYPE edidc,
+                 <d> TYPE edidd.
+
+* go through all IDocs                                                 *
+  LOOP AT idoc_contrl ASSIGNING <c>.
+*   select segments belonging to one IDoc                              *
+    REFRESH lt_edidd.
+    LOOP AT idoc_data ASSIGNING <d> WHERE docnum = <c>-docnum.
+      APPEND <d> TO lt_edidd.
+    ENDLOOP.
+  ENDLOOP.
+
+  LOOP AT lt_edidd ASSIGNING <d>.
+    ls_z1pregre = <d>-sdata.
+    MOVE-CORRESPONDING ls_z1pregre TO ls_pregre.
+    ls_pregre-idoc = <d>-docnum.
+    ls_pregre-datum = sy-datum.
+    ls_pregre-tims = sy-timlo.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+      EXPORTING
+        input  = g_idoc_control-sndprn   " C field
+      IMPORTING
+        output = ls_pregre-kunnr.   " Internal display of INPUT, any category
+
+    APPEND ls_pregre TO ch_zpregre.
+    CLEAR ls_pregre.
+  ENDLOOP.
+ENDFORM.
+*---------------------------------------------------------------------*
+FORM f_transcoding
+  CHANGING ch_zpregre TYPE zpregre_t.
+  FIELD-SYMBOLS:
+                 <pre> TYPE zpregre.
+  LOOP AT ch_zpregre ASSIGNING <pre>.
+    condense <pre>-bdmng NO-GAPS.
+  ENDLOOP.
+
+ENDFORM.
+*---------------------------------------------------------------------*
+FORM f_update_db
+  USING im_zpregre TYPE zpregre_t
+        idoc_number
+  CHANGING idoc_status TYPE bdtidocsta.
+
+  CHECK im_zpregre IS NOT INITIAL.
+  CALL FUNCTION 'ENQUEUE_EZPREGRE'
+*   EXPORTING
+*     MODE_ZPREGRE         = 'E'
+*     MANDT                = SY-MANDT
+*     TPREL                =
+*     AUFNR                =
+*     POSNR                =
+*     X_TPREL              = ' '
+*     X_AUFNR              = ' '
+*     X_POSNR              = ' '
+*     _SCOPE               = '2'
+*     _WAIT                = ' '
+*     _COLLECT             = ' '
+    EXCEPTIONS
+      foreign_lock   = 1
+      system_failure = 2
+      OTHERS         = 3.
+  IF sy-subrc = 0.
+
+    MODIFY zpregre FROM TABLE im_zpregre.
+
+    IF sy-subrc NE 0.
+      "not all specified rows were changed.
+      "This is either because no appropriate row was found, or because the
+      "change would created a row that produces duplicate entries in the
+      "primary key or a unique secondary index in the database table.
+      PERFORM statusfelder_fuellen
+          USING fehler_in_der_bearbeitung
+                '/IPRO/DBMC'
+                '003'
+                'ZPREGRE'
+                space
+                ' '
+                ' '
+                'SAPLZSCMINTLEO'
+                'f_update_db'
+                ' '
+                idoc_number
+                'E'
+            CHANGING idoc_status.
+      IF 1 = 2. MESSAGE i003(/ipro/dbmc).  ENDIF.
+    ELSE.
+      PERFORM statusfelder_fuellen
+        USING fehler_in_der_bearbeitung
+          'BC_DATAMODEL_SERVICE'
+          '343'
+          'ZPREGRE'
+          space
+          ' '
+          ' '
+          'SAPLZSCMINTLEO'
+          'f_update_db'
+          ' '
+          idoc_number
+          'S'
+      CHANGING idoc_status.
+      IF 1 = 2. MESSAGE i343(bc_datamodel_service).  ENDIF.
+    ENDIF.
+    COMMIT WORK.
+
+    CALL FUNCTION 'DEQUEUE_EZPREGRE'
+*     EXPORTING
+*       MODE_ZPREGRE       = 'E'
+*       MANDT              = SY-MANDT
+*       TPREL              =
+*       AUFNR              =
+*       POSNR              =
+*       X_TPREL            = ' '
+*       X_AUFNR            = ' '
+*       X_POSNR            = ' '
+*       _SCOPE             = '3'
+*       _SYNCHRON          = ' '
+*       _COLLECT           = ' '
+      .
+  ELSE.
+* Status ans IDoc hängen
+    PERFORM statusfelder_fuellen
+            USING fehler_in_der_bearbeitung
+                  '/ISDFPS/ORENG'
+                  '204'
+                  space
+                  space
+                  ' '
+                  ' '
+                  'SAPLZSCMINTLEO'
+                  'f_update_db'
+                  ' '
+                  idoc_number
+                  'E'
+              CHANGING idoc_status.
+    IF 1 = 2. MESSAGE i204(/isdfps/oreng).  ENDIF.
+  ENDIF.
+ENDFORM.
+
+
+*---------------------------------------------------------------------*
+*       FORM STATUSFELDER_FUELLEN                                     *
+*---------------------------------------------------------------------*
+* Die Statusfelder werden gefuellt- dadurch werden die detailierten   *
+* RAISE-Anweisungen im Funktionsbaustein ueberfluessig.               *
+* Entspricht der Status ein Programmabbruch, wird die Verarbeitung    *
+* des Intermediate Documents beendet und ein RAISE aufgerufen.        *
+*---------------------------------------------------------------------*
+FORM statusfelder_fuellen USING VALUE(status)
+                                VALUE(msgid)
+                                VALUE(msgnr)
+                                VALUE(msgpa1)
+                                VALUE(msgpa2)
+                                VALUE(msgpa3)
+                                VALUE(msgpa4)
+                                VALUE(repid)
+                                VALUE(routid)
+                                VALUE(segfld)
+                                idoc_number
+                                msgty
+    CHANGING idoc_status TYPE bdtidocsta.
+
+
+* Statuswerte gem. Tabelle XTEDS1 vor Uebergabe testen
+  READ TABLE xteds1 WITH KEY status.
+  IF sy-subrc <> 0.
+    status = '??'.
+    xteds1-kategorie = fehler.
+  ENDIF.
+
+* Status hinzufuegen
+  PERFORM status_schreiben USING status
+                                 msgid
+                                 msgnr
+                                 msgpa1
+                                 msgpa2
+                                 msgpa3
+                                 msgpa4
+                                 repid
+                                 routid
+                                 segfld
+                                 idoc_number
+                                 msgty
+              CHANGING idoc_status.
+
+  IF xteds1-kategorie = fehler.
+*    RAISE error_message.
+  ENDIF.
+
+ENDFORM.                    "STATUSFELDER_FUELLEN
+
+*---------------------------------------------------------------------*
+*       FORM STATUS_SCHREIBEN                                         *
+*---------------------------------------------------------------------*
+* Der Statussatz des Intermediate Documents wird geschrieben.         *
+*---------------------------------------------------------------------*
+FORM status_schreiben USING VALUE(status)
+                            VALUE(msgid)
+                            VALUE(msgnr)
+                            VALUE(msgpa1)
+                            VALUE(msgpa2)
+                            VALUE(msgpa3)
+                            VALUE(msgpa4)
+                            VALUE(repid)
+                            VALUE(routid)
+                            VALUE(segfld)
+                            idoc_number
+                            msgty
+  CHANGING idoc_status TYPE bdtidocsta.
+
+*  DATA: BEGIN OF xedids.
+*          INCLUDE STRUCTURE edi_ds.
+*  DATA: END OF xedids,
+*    ls_xedids type edi_ds,
+  DATA: ls_idoc_status TYPE bdidocstat.
+
+*  CLEAR ls_xedids.
+** Uebergabe der Parameter zur Versorgung der FB-Schnittstelle
+*  ls_xedids-logdat = sy-datum.
+*  ls_xedids-logtim = sy-uzeit.
+*
+*  ls_xedids-status = status.
+*  ls_xedids-repid  = repid.
+*  ls_xedids-routid = routid.
+*  ls_xedids-stacod = 'SAP?1?2'.
+*  REPLACE '?1' WITH msgid INTO ls_xedids-stacod.
+*  REPLACE '?2' WITH msgnr INTO ls_xedids-stacod.
+*  ls_xedids-segfld = segfld.
+*  ls_xedids-stapa1 = msgpa1.
+*  ls_xedids-stapa2 = msgpa2.
+*  ls_xedids-stapa3 = msgpa3.
+*  ls_xedids-stapa4 = msgpa4.
+  CLEAR status .
+*  MOVE-CORRESPONDING ls_xedids TO ls_idoc_status.
+  ls_idoc_status-docnum = idoc_number.
+  ls_idoc_status-msgty = msgty.
+  IF msgty = 'S'.
+    ls_idoc_status-status =  bearbeitet. "53
+  ELSE.
+    ls_idoc_status-status = fehler_in_der_bearbeitung . "51
+  ENDIF.
+  ls_idoc_status-msgv1 = msgpa1.
+  ls_idoc_status-msgv2 = msgpa2.
+  ls_idoc_status-msgv3 = msgpa3.
+  ls_idoc_status-msgv4 = msgpa4.
+  ls_idoc_status-msgid = msgid.
+  ls_idoc_status-msgno = msgnr.
+* INTERMEDIATE_DOCUMENT_NUMBER = IDOC_NUMBER.
+* Status hinzufuegen
+  APPEND ls_idoc_status TO idoc_status.
+
+ENDFORM.                    "STATUS_SCHREIBEN

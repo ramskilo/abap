@@ -1,0 +1,98 @@
+FUNCTION-POOL zscmintleo.                   "MESSAGE-ID ..
+
+* INCLUDE LZSCMINTLEOD...                    " Local class definition
+
+CONSTANTS:
+  c_parziale  TYPE char10 VALUE 'parziale',
+  c_totale    TYPE char10 VALUE 'totale',
+  c_altro_cod TYPE char10 VALUE 'altro_cod',
+  c_nulla     TYPE char10 VALUE IS INITIAL.
+TYPES:
+  BEGIN OF ty_likp,
+    vbeln TYPE vbeln_vl,
+    inco1 TYPE inco1,
+    aenam type aenam,
+    werks TYPE empfw,
+  END OF ty_likp,
+  BEGIN OF ty_lips,
+    vbeln TYPE vbeln_vl,
+    posnr TYPE posnr_vl,
+    MATNR type MATNR,
+    werks TYPE werks_d,
+    CHARG type CHARG_D,
+    LFIMG type LFIMG,
+    meins TYPE meins,
+    vrkme type vrkme,
+    mbdat TYPE mbdat,
+    aufnr TYPE aufnr,
+  END OF ty_lips,
+  BEGIN OF ty_vbak,
+    vbeln TYPE vbeln_va,
+    aufnr TYPE aufnr,
+  END OF ty_vbak,
+  BEGIN OF ty_vbap,
+    vbeln TYPE vbeln_va,
+    posnr TYPE posnr_va,
+    charg type CHARG_d,
+    meins TYPE meins,
+    werks TYPE werks_ext,
+    aufnr TYPE aufnr,
+  END OF ty_vbap,
+  begin of ty_vbkd,
+    VBELN   type VBELN     ,
+    POSNR   type POSNR     ,
+    ZTERM   type DZTERM    ,
+    ZLSCH   type SCHZW_BSEG,
+    PRSDT   type PRSDT     ,
+    FKDAT   type FKDAT     ,
+    BSTKD   type BSTKD     ,
+    BSTDK   type BSTDK     ,
+    BSARK   type BSARK     ,
+    IHREZ   type IHREZ     ,
+    BSTKD_E type BSTKD_E   ,
+    BSTDK_E type BSTDK_E   ,
+    BSARK_E type BSARK_E   ,
+    IHREZ_E type IHREZ_E   ,
+    POSEX_E type POSEX_E   ,
+  end of ty_vbkd,
+  begin of ty_vbfa,
+    RUUID   type SD_DOC_REL_UUID,
+    VBELV   type VBELN_VON      ,
+    POSNV   type POSNR_VON      ,
+    VBELN   type VBELN_NACH     ,
+    POSNN   type POSNR_NACH     ,
+    VBTYP_N type VBTYPL_N       ,
+  END OF ty_vbfa,
+  begin of ty_mcha,
+    MATNR type MATNR  ,
+    WERKS type WERKS_D,
+    CHARG type CHARG_D,
+    LICHA type LICHN  ,
+  end of ty_mcha,
+  ty_likp_t type table of ty_likp,
+  ty_lips_t type table of ty_lips,
+  ty_vbak_t type table of ty_vbak,
+  ty_vbap_t type table of ty_vbap,
+  ty_vbkd_t type table of ty_vbkd,
+  ty_vbfa_t TYPE TABLE OF ty_vbfa,
+  ty_mcha_t type table of ty_mcha.
+
+  data:
+    gt_zpregre TYPE zpregre_t.
+DATA:   erster_statuswert_eingang LIKE teds1-status VALUE '50'.
+
+DATA: waehrend_einplanen        LIKE teds1-status VALUE '62',
+      zu_bearbeiten             LIKE teds1-status VALUE '50',
+      fehler_bei_uebergabe      LIKE teds1-status VALUE '51',
+      in_bearbeitung            LIKE teds1-status VALUE '52',
+      bearbeitet                LIKE teds1-status VALUE '53',
+      fehler_in_der_bearbeitung LIKE teds1-status VALUE '51'.
+
+DATA:   BEGIN OF xteds1 OCCURS 100.
+    INCLUDE STRUCTURE teds1.
+DATA:     kategorie(1) TYPE c.
+DATA: END OF xteds1,
+fehler(1)      TYPE c VALUE 'F',
+  g_idoc_control TYPE edidc,
+  gt_errors      TYPE bapiret2_t,
+  g_vbeln        TYPE vbeln.  ""numero consegna

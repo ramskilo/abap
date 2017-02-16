@@ -1,0 +1,660 @@
+FUNCTION Z_ORDERS_CREATION
+  IMPORTING
+    VALUE(IM_TPREL) TYPE ZSDTPREL
+    VALUE(IM_AUFNR) TYPE ANY TABLE
+    VALUE(IM_VKORG) TYPE VKORG
+    VALUE(IM_VTWEG) TYPE VTWEG
+    VALUE(IM_SPART) TYPE SPART
+  EXPORTING
+    ERRORS TYPE BAPIRET2_T
+  CHANGING
+    IM_KUNNR TYPE ANY TABLE.
+
+
+
+  DATA:
+          ls_errors TYPE bapiret2.
+
+  IF gt_zpregre IS INITIAL.
+    PERFORM f_select_from_db
+      USING   im_tprel
+              im_aufnr[]
+              im_kunnr[]
+              im_vkorg
+              im_vtweg
+              im_spart
+      CHANGING gt_zpregre.
+  ENDIF.
+
+  IF gt_zpregre IS INITIAL.
+    PERFORM f_message_add
+        USING 'I' '720' 'F2' space space space space.
+* No data found with these selection criteria
+  ENDIF.
+  IF gt_zpregre IS NOT INITIAL.
+
+    PERFORM f_processing
+      USING gt_zpregre
+      CHANGING gt_errors.
+
+  ENDIF.
+
+  errors = gt_errors.
+
+ENDFUNCTION.
+*--------------------------------------------------------------*
+FORM f_select_from_db
+  USING
+    im_tprel TYPE zsdtprel
+    im_aufnr TYPE ANY TABLE
+    im_kunnr TYPE eaglt_bapi_rangeskunnr_tty
+    im_vkorg TYPE vkorg
+    im_vtweg TYPE vtweg
+    im_spart TYPE spart
+  CHANGING ch_zpregre TYPE zpregre_t.
+
+  SELECT *
+    FROM zpregre INTO TABLE ch_zpregre
+    WHERE
+        tprel = im_tprel AND
+        aufnr IN im_aufnr AND
+        kunnr IN im_kunnr.
+
+ENDFORM.
+*--------------------------------------------------------------*
+FORM f_processing
+   USING im_zpregre TYPE zpregre_t
+   CHANGING ch_errors TYPE bapiret2_t.
+  DATA:
+*    ls_knmt type zknmt,
+    ls_mara            TYPE zmara,
+    ls_mara_secondario TYPE zmara,  "materiale secondario
+    lt_mara            TYPE zmara_t,
+    lt_vbak            TYPE zvbak_t,
+    ls_vbak            TYPE zvbak,
+    ls_ordini          TYPE zordini,
+    lt_ordini          TYPE zordini_t,
+    lt_ordtbc          TYPE zordini_t,
+    ls_werks           TYPE zscmwerks.
+  FIELD-SYMBOLS:
+    <pr> TYPE zpregre,
+    <o>  TYPE zordini.
+
+  LOOP AT im_zpregre ASSIGNING <pr>.
+
+    IF <pr>-zdelete NE space.
+      PERFORM f_message_add
+        USING
+          'I' '000' 'ZSCM'
+          space space space space.
+      IF 1 = 2. MESSAGE i000(zscm). ENDIF.
+      CONTINUE.
+    ENDIF.
+
+    CHECK <pr>-mfrpn IS NOT INITIAL.
+*        select single
+*          VKORG
+*          VTWEG
+*          KUNNR
+*          MATNR
+*          kdmat
+*      from knmt
+*      into ls_knmt
+*      where
+*          vkorg = '1030' and
+*          vtweg = '10' and
+*          kunnr = g_idoc_control-sndprn and
+*          kdmat = <pr>-mfrpn.
+    FREE: lt_mara.
+    SELECT
+      matnr
+      lvorm
+      mtart
+      bismt
+    FROM mara
+    INTO TABLE lt_mara
+    WHERE bismt = <pr>-mfrpn.
+
+    IF sy-subrc NE 0.
+      PERFORM f_message_add
+        USING
+          'S' '029' 'VSMI'
+          <pr>-kunnr
+          space
+          space
+          space.
+    ENDIF.
+
+    CHECK sy-subrc EQ 0.
+
+*    describe table lt_mara lines l_lines.
+    SORT lt_mara BY
+        mtart.
+    FREE: ls_mara.
+    READ TABLE lt_mara
+    INTO ls_mara
+    WITH KEY
+        mtart = 'ZCLI' BINARY SEARCH.
+    FREE: ls_mara_secondario.
+    READ TABLE lt_mara
+    INTO ls_mara_secondario
+    WITH KEY
+        mtart = 'ZGRE' BINARY SEARCH.
+    IF ls_mara IS INITIAL AND lt_mara IS NOT INITIAL.
+      FREE: ls_mara.
+      READ TABLE lt_mara
+      INTO ls_mara
+      INDEX 1.
+    ENDIF.
+
+    FREE: lt_vbak.
+    SELECT
+      k~vbeln
+      k~audat
+      vbtyp
+      auart
+      vkorg
+      vtweg
+      p~spart
+      knumv
+      posnr
+      matnr
+      zwert
+      zmeng
+      zieme
+      meins
+      kdmat
+      p~waerk
+    FROM vbak AS k
+    INNER JOIN vbap AS p
+    ON k~vbeln = p~vbeln
+    INTO TABLE lt_vbak
+    WHERE vbtyp = 'G' AND
+          matnr = ls_mara-matnr.
+    MOVE-CORRESPONDING <pr> TO ls_ordini.
+    ls_ordini-mtart = ls_mara-mtart.
+    ls_ordini-matnr_secondario = ls_mara_secondario-matnr.
+    IF lt_vbak IS NOT INITIAL.
+      ls_ordini-rif_a_contratto = abap_true.
+    ELSE.
+      ls_ordini-rif_a_contratto = abap_false.
+    ENDIF.
+    ls_ordini-matnr = ls_mara-matnr.
+
+    ls_ordini-parvwag = <pr>-kunnr.
+
+    CLEAR ls_werks.
+    SELECT SINGLE
+      mandt
+      werks_ext
+      werks
+    FROM zscmwerks
+    INTO ls_werks
+    WHERE werks_ext = <pr>-werks.
+
+    IF sy-subrc EQ 0.
+      ls_ordini-iwerk = ls_werks-werks.
+    ENDIF.
+
+    APPEND ls_ordini TO lt_ordini.
+    FREE: ls_ordini.
+
+  ENDLOOP.
+
+  LOOP AT lt_ordini ASSIGNING <o>.
+    FREE: lt_ordtbc.
+    APPEND <o> TO lt_ordtbc.  "per ora una riga idoc -> un ordine
+    CLEAR ls_vbak.
+    IF <o>-rif_a_contratto EQ abap_true.
+
+      READ TABLE lt_vbak INTO ls_vbak INDEX 1.
+      PERFORM f_direct_order_creation
+          USING lt_ordtbc
+                ls_vbak.
+    ELSE.
+      PERFORM f_direct_order_creation
+          USING lt_ordtbc
+                ls_vbak.
+    ENDIF.
+
+  ENDLOOP.
+ENDFORM.
+*****************************************
+FORM f_direct_order_creation
+   USING im_pr TYPE zordini_t
+         im_vbak TYPE zvbak.
+
+  DATA:
+    order_header_in      TYPE bapisdhd1,
+    order_partners       TYPE bapiparnr_tab,
+    order_items_in       TYPE bapisditm_tt,
+    order_items_inx      TYPE bapisditmx_tt,
+    order_schedules_in   TYPE cod_t_bapischdl,
+    order_schedules_inx  TYPE cod_t_bapischdlx,
+    order_conditions_in  TYPE  cmp_t_cond,
+    order_conditions_inx TYPE  cod_t_bapicondx,
+    extensionin          TYPE bapiparextab,
+    order_text           TYPE bapisdtext_t,
+    ls_return            TYPE bapiret2,
+    lt_return            TYPE bapiret2_t.
+
+  PERFORM f_bapi_createfromdat_mapping
+      USING im_pr
+            im_vbak
+      CHANGING
+              order_header_in
+              order_partners
+              order_items_in
+              order_items_inx
+              order_schedules_in
+              order_schedules_inx
+              order_conditions_in
+              order_conditions_inx
+              extensionin
+              order_text.
+
+  CALL FUNCTION 'BAPI_SALESORDER_CREATEFROMDAT2'
+    EXPORTING
+*     SALESDOCUMENTIN      =
+      order_header_in      = order_header_in
+*     ORDER_HEADER_INX     =
+*     SENDER               =
+*     BINARY_RELATIONSHIPTYPE       =
+*     INT_NUMBER_ASSIGNMENT         =
+*     BEHAVE_WHEN_ERROR    =
+*     LOGIC_SWITCH         =
+*     TESTRUN              =
+*     CONVERT              = ' '
+*   IMPORTING
+*     SALESDOCUMENT        =
+    TABLES
+      return               = lt_return
+      order_items_in       = order_items_in
+      order_items_inx      = order_items_inx
+      order_partners       = order_partners
+      order_schedules_in   = order_schedules_in
+      order_schedules_inx  = order_schedules_inx
+      order_conditions_in  = order_conditions_in
+      order_conditions_inx = order_conditions_inx
+*     ORDER_CFGS_REF       =
+*     ORDER_CFGS_INST      =
+*     ORDER_CFGS_PART_OF   =
+*     ORDER_CFGS_VALUE     =
+*     ORDER_CFGS_BLOB      =
+*     ORDER_CFGS_VK        =
+*     ORDER_CFGS_REFINST   =
+*     ORDER_CCARD          =
+      order_text           = order_text
+*     ORDER_KEYS           =
+      extensionin          = extensionin[]
+*     PARTNERADDRESSES     =
+*     EXTENSIONEX          =
+*     NFMETALLITMS         =
+    .
+
+  APPEND LINES OF lt_return TO gt_errors.
+
+  CLEAR lt_return.
+
+  CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+*    EXPORTING
+*      wait   =     " Use of Command `COMMIT AND WAIT`
+    IMPORTING
+      return = ls_return.   " Return Messages.
+  IF ls_return IS NOT INITIAL.
+    APPEND ls_return TO gt_errors.
+  ENDIF.
+ENDFORM.
+*****************************************
+FORM f_bapi_createfromdat_mapping
+     USING im_pr TYPE zordini_t
+           im_vbak TYPE zvbak
+     CHANGING
+        order_header_in      TYPE bapisdhd1
+        order_partners       TYPE bapiparnr_tab
+        order_items_in       TYPE bapisditm_tt
+        order_items_inx      TYPE bapisditmx_tt
+        order_schedules_in   TYPE cod_t_bapischdl
+        order_schedules_inx  TYPE cod_t_bapischdlx
+        order_conditions_in  TYPE  cmp_t_cond
+        order_conditions_inx TYPE  cod_t_bapicondx
+        extensionin TYPE bapiparextab
+        order_text TYPE bapisdtext_t.
+
+  DATA:
+    l_item                  TYPE posnr VALUE 10,
+    ls_order_items_in       TYPE bapisditm,
+    ls_order_items_inx      TYPE bapisditmx,
+    ls_order_partners       TYPE bapiparnr,
+    ls_order_schedules_in   TYPE bapischdl,
+    ls_order_schedules_inx  TYPE bapischdlx,
+    ls_order_conditions_in  TYPE bapicond,
+    ls_order_conditions_inx TYPE bapicondx,
+    l_kunwe                 TYPE kunnr,
+    ls_order_text           TYPE bapisdtext,
+    ls_extensionin          TYPE bapiparex,
+    ls_bape_vbap            TYPE bape_vbap,
+    ls_bape_vbapx           TYPE bape_vbapx,
+    l_disponibilita         TYPE char10.  "parziale, totale, altro_cod
+  FIELD-SYMBOLS: <o> TYPE zordini.
+
+  LOOP AT im_pr ASSIGNING <o>.
+    order_header_in-doc_type = 'Z_SO'.
+    order_header_in-sales_org = '1030'.
+    order_header_in-distr_chan = '10'.
+    order_header_in-division = '10'.
+    order_header_in-doc_date = <o>-date1.
+    order_header_in-purch_no_c = <o>-aufnr.
+*    order_header_in-purch_no_s = <o>-posnr.  "13/02/2017
+    order_header_in-incoterms1 = <o>-inco1.
+    order_header_in-req_date_h = <o>-bdter.
+
+    IF <o>-rif_a_contratto EQ abap_true.
+      ls_order_items_in-ref_doc = im_vbak-vbeln. ls_order_items_inx-ref_doc = 'X'.
+      ls_order_items_in-ref_doc_it = im_vbak-posnr.  ls_order_items_inx-ref_doc_it =  'X'.
+      ls_order_items_in-ref_doc_ca = im_vbak-vbtyp.  ls_order_items_inx-ref_doc_ca =  'X'.
+
+      PERFORM f_get_conditions_from_contract
+        USING im_vbak
+              l_item
+        CHANGING order_conditions_in
+                 order_conditions_inx.
+
+    ENDIF.
+
+    ls_order_items_in-itm_number = ls_order_items_inx-itm_number = l_item.
+
+
+
+    PERFORM f_controllo_disponibilit
+        USING <o>-matnr
+              <o>-iwerk
+              <o>-bdmng
+              <o>-mtart
+        CHANGING l_disponibilita.
+
+    IF l_disponibilita EQ c_totale.
+      ls_order_items_in-item_categ = 'ZTRX'.
+    ELSEIF l_disponibilita EQ c_nulla.
+      <o>-matnr = <o>-matnr_secondario.
+    ENDIF.
+
+    ls_order_items_in-material = <o>-matnr. ls_order_items_inx-material = 'X'.
+    ls_order_items_in-plant = <o>-iwerk. ls_order_items_inx-plant = 'X'.
+    ls_order_items_in-target_qty = <o>-bdmng. ls_order_items_inx-target_qty = 'X'.
+    ls_order_items_in-PURCH_NO_S = <o>-pnodp. ls_order_items_inx = 'X'.
+
+    call function 'CONVERSION_EXIT_CUNIT_INPUT'
+      EXPORTING
+        input          = <o>-meins    " external display of unit of measurement
+        language       = SY-LANGU    " Language key (default: logon language)
+      IMPORTING
+        output         =  ls_order_items_in-sales_unit   " internal display of unit of measurement
+      EXCEPTIONS
+        unit_not_found = 1
+        others         = 2.
+    IF sy-subrc <> 0.
+*     MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*                WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ENDIF.
+*    ls_order_items_in-sales_unit = <o>-meins.
+    ls_order_items_inx-sales_unit = 'X'.
+
+    ls_order_items_in-short_text = <o>-maktx. ls_order_items_inx-short_text = 'X'.
+
+    ls_order_items_in-purch_date = <o>-bdter. ls_order_items_inx-purch_date = 'X'.
+    ls_order_items_in-ref_1 = <o>-zuser.  ls_order_items_inx-ref_1 = 'X'.
+    ls_order_items_in-target_qty = <o>-bdmng.
+    ls_order_items_in-cust_mat35 = <o>-kdmat.
+
+    APPEND ls_order_items_in TO order_items_in.
+    FREE: ls_order_items_in.
+    APPEND ls_order_items_inx TO order_items_inx.
+    FREE: ls_order_items_inx.
+
+    ls_order_partners-partn_role = 'AG'.
+    ls_order_partners-partn_numb = <o>-parvwag.
+    APPEND ls_order_partners TO order_partners.
+    FREE: ls_order_partners.
+
+    IF <o>-dest NE '26'.
+      CLEAR l_kunwe.
+      SELECT SINGLE kunnr
+      FROM knvv
+      INTO l_kunwe
+      WHERE
+          vkorg = '1030' AND
+          vtweg = '10' AND
+          spart = '10' AND
+          eikto = <o>-dest.
+      ls_order_partners-partn_role = 'WE'.
+      ls_order_partners-partn_numb = <o>-parvwwe = l_kunwe.
+      APPEND ls_order_partners TO order_partners.
+      FREE: ls_order_partners.
+    ENDIF.
+
+    ls_order_schedules_in-itm_number = ls_order_schedules_inx-itm_number = l_item.
+    IF l_disponibilita eq c_parziale.
+      ls_order_schedules_in-req_dlv_bl = 'Z0'. ls_order_schedules_inx-req_dlv_bl = 'X'.
+       "TODO: mettere quello corretto quando creato
+    ENDIF.
+    ls_order_schedules_in-req_date = <o>-bdter. ls_order_schedules_inx-req_date = 'X'.
+    ls_order_schedules_in-req_qty = <o>-bdmng. ls_order_schedules_inx-req_qty = 'X'.
+    APPEND ls_order_schedules_in TO order_schedules_in.
+    FREE: ls_order_schedules_in.
+    APPEND ls_order_schedules_inx TO order_schedules_inx.
+    FREE: ls_order_schedules_inx.
+
+*   extensionin
+    ls_extensionin-structure = 'BAPE_VBAP'.
+    ls_bape_vbap-posnr = l_item.      ls_bape_vbapx-posnr =   l_item.
+    ls_bape_vbap-zzdata3 = <o>-bdter. ls_bape_vbapx-zzdata3 = 'X'.
+    ls_bape_vbap-zzidoc = <o>-idoc.   ls_bape_vbapx-zzidoc =  'X'.
+    ls_extensionin+30 = ls_bape_vbap.
+    APPEND ls_extensionin TO extensionin.
+    CLEAR ls_extensionin.
+    ls_extensionin-structure = 'BAPE_VBAPX'.
+    ls_extensionin+30 = ls_bape_vbapx.
+    APPEND ls_extensionin TO extensionin.
+    CLEAR ls_extensionin.
+    CLEAR: ls_bape_vbap, ls_bape_vbapx.
+
+*   TODO TESTI
+    ls_order_text-text_id = 'Z301'.
+
+    IF order_conditions_in IS INITIAL.
+      ls_order_conditions_in-itm_number = ls_order_conditions_inx-itm_number = l_item.
+      ls_order_conditions_in-cond_type = 'ZPR0'. ls_order_conditions_inx-cond_type = 'X'.
+**    ls_order_conditions_in-cond_value = '1'. ls_order_conditions_inx-cond_value = 'X'.
+*    ls_order_conditions_in-currency = 'EUR'. ls_order_conditions_inx-currency = 'X'.
+
+      APPEND ls_order_conditions_in TO order_conditions_in.
+      FREE: ls_order_conditions_in.
+      APPEND ls_order_conditions_inx TO order_conditions_inx.
+      FREE: ls_order_conditions_inx.
+    ENDIF.
+
+  ENDLOOP.
+
+ENDFORM.
+*-----------------------------------------------------------------------*
+
+FORM f_message_add
+    USING severity
+          im_number
+          class
+          v1 v2 v3 v4.
+
+  DATA:
+        ls_errors TYPE bapiret2.
+  MESSAGE ID class TYPE severity NUMBER im_number WITH v1 v2 v3 v4
+  INTO ls_errors-message.
+  ls_errors-id = class.
+  ls_errors-number = im_number.
+  ls_errors-type = severity.
+  ls_errors-message_v1 = v1.
+  ls_errors-message_v2 = v2.
+  ls_errors-message_v3 = v3.
+  ls_errors-message_v4 = v4.
+  APPEND ls_errors TO gt_errors.
+  FREE: ls_errors.
+
+ENDFORM.
+*-----------------------------------------------------------------------*
+FORM f_get_conditions_from_contract
+    USING  im_vbak TYPE zvbak
+           l_item TYPE posnr
+    CHANGING order_conditions_in  TYPE  cmp_t_cond
+             order_conditions_inx TYPE  cod_t_bapicondx.
+
+  DATA:
+    lt_konv       TYPE TABLE OF prcd_elements,
+    lt_t685a      TYPE zt685a_t,
+    lt_komv       TYPE STANDARD TABLE OF komv WITH HEADER LINE,
+    lt_bapisdcond TYPE wsso_bapisdcond_tty,
+    ls_bapicond   TYPE bapicond,
+    ls_bapicondx  TYPE bapicondx,
+    lt_vbak       TYPE TABLE OF vbak,
+    ls_vbak       TYPE vbak,
+    lt_vbap       TYPE TABLE OF vbapvb.
+  FIELD-SYMBOLS:
+    <k>   TYPE prcd_elements,
+    <sdc> TYPE bapisdcond.
+
+  SELECT *
+  INTO TABLE lt_konv
+  FROM  prcd_elements
+  WHERE
+    knumv = im_vbak-knumv AND
+    kposn = im_vbak-posnr.
+
+  CHECK sy-subrc EQ 0.
+
+*We now need to make sure we only bring across the Condition Types that
+*are EDITABLE. If we bring across non editable conditions the Change Sales Order BAPI will fail
+
+  SELECT kappl kschl kaend_wrt
+  INTO TABLE lt_t685a
+  FROM t685a
+  FOR ALL ENTRIES IN lt_konv
+  WHERE
+    kappl EQ 'V' AND "Sales
+    kschl EQ lt_konv-kschl AND
+    kaend_wrt EQ 'X' AND "Value is Editable
+    kmanu NE 'D'. "Process manually
+
+  SORT lt_t685a BY kschl.
+
+  LOOP AT lt_konv ASSIGNING <k>.
+
+*    READ TABLE lt_t685a WITH KEY kschl = <k>-kschl
+*    TRANSPORTING NO FIELDS BINARY SEARCH.
+*
+*    IF sy-subrc EQ 0.
+    IF <k>-kschl EQ 'ZPR0'.
+      MOVE-CORRESPONDING <k> TO lt_komv.
+
+      APPEND lt_komv.
+    ENDIF.
+*    ENDIF.
+
+  ENDLOOP.
+
+  CHECK NOT lt_komv[] IS INITIAL.
+
+  MOVE-CORRESPONDING im_vbak TO ls_vbak.
+  APPEND ls_vbak TO lt_vbak.
+  CLEAR ls_vbak.
+*   select * from vbak into table lt_vbak
+*   where vbeln = im_vbak-vbeln.
+*   select * from vbap into table lt_vbap
+*   where vbeln = im_vbak-vbeln.
+
+*Map KOMV into the more BAPI friendly BAPISDCOND structure
+  CALL FUNCTION 'MAP_INT_TO_EXT_STRUCTURE'
+    TABLES
+      fxvbak        = lt_vbak
+*     fxvbap        = lt_vbap
+      fxkomv        = lt_komv
+      fxbapikomv    = lt_bapisdcond
+    EXCEPTIONS
+      entry_missing = 1
+      OTHERS        = 2.
+
+  LOOP AT lt_bapisdcond ASSIGNING <sdc>.
+
+    CLEAR ls_bapicond.
+
+    MOVE-CORRESPONDING <sdc> TO ls_bapicond.
+    ls_bapicond-itm_number = l_item.
+
+    APPEND ls_bapicond TO order_conditions_in.
+
+    CLEAR ls_bapicondx.
+
+    ls_bapicondx-itm_number = l_item.
+    ls_bapicondx-cond_st_no = <sdc>-cond_st_no.
+    ls_bapicondx-cond_count = <sdc>-cond_count.
+    ls_bapicondx-cond_type = <sdc>-cond_type.
+    ls_bapicondx-updateflag = 'I'.
+    ls_bapicondx-cond_value = 'X'.
+    ls_bapicondx-currency = 'X'.
+    ls_bapicondx-cond_unit = 'X'.
+    ls_bapicondx-cond_p_unt = 'X'.
+
+    ls_bapicondx-varcond = <sdc>-variancond.
+
+    APPEND ls_bapicondx TO order_conditions_inx.
+
+  ENDLOOP.
+
+ENDFORM.
+**********************************************************************
+FORM f_controllo_disponibilit
+    USING im_matnr TYPE matnr
+          im_werks TYPE werks_d
+          im_menge
+          im_mtart
+    CHANGING ex_disponib TYPE char10.
+
+  DATA:
+    lt_mchb  TYPE TABLE OF mchb,
+    ls_stock TYPE mchb,
+    lt_stock TYPE TABLE OF mchb.
+  FIELD-SYMBOLS:
+      <h> TYPE mchb.
+
+  IF im_mtart NE 'ZCLI'.
+    ex_disponib = c_altro_cod.
+    EXIT.
+  ENDIF.
+
+  SELECT *
+  FROM mchb
+  INTO TABLE lt_mchb
+  WHERE
+      matnr = im_matnr AND
+      werks = im_werks AND
+      lvorm = space AND
+      clabs > 0.
+
+  LOOP AT lt_mchb ASSIGNING <h>.
+    ls_stock-matnr = <h>-matnr.
+    ls_stock-werks = <h>-werks.
+    ls_stock-clabs = <h>-clabs.
+    COLLECT ls_stock INTO lt_stock.
+    CLEAR ls_stock.
+  ENDLOOP.
+
+  CHECK lt_stock IS NOT INITIAL.
+  CLEAR ls_stock.
+  READ TABLE lt_stock
+  INTO ls_stock
+  INDEX 1.
+
+  IF im_menge <= ls_stock-clabs.
+    ex_disponib = c_totale.
+  ELSE.
+    ex_disponib = c_parziale.
+  ENDIF.
+ENDFORM.

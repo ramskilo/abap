@@ -1,0 +1,393 @@
+FUNCTION Z_IDOC_OUTPUT_ZADSGRE
+  IMPORTING
+    VALUE(OBJECT) LIKE NAST
+    VALUE(CONTROL_RECORD_IN) LIKE EDIDC
+  EXPORTING
+    VALUE(OBJECT_TYPE) LIKE WFAS1-ASGTP
+    VALUE(CONTROL_RECORD_OUT) LIKE EDIDC
+  TABLES
+    INT_EDIDD LIKE EDIDD
+  EXCEPTIONS
+    ERROR_MESSAGE_RECEIVED.
+
+
+
+  DATA:
+    ls_testata TYPE z1adsgre,
+    lt_posiz   TYPE z1adsgre_pt,
+    lt_likp    TYPE ty_likp_t,
+    lt_lips    TYPE ty_lips_t,
+    lt_vbak    TYPE ty_vbak_t,
+    lt_vbap    TYPE ty_vbap_t,
+    lt_vbkd    TYPE ty_vbkd_t,
+    lt_pregre  TYPE zpregre_t,
+    lt_vbfa    TYPE ty_vbfa_t,
+    lt_mcha    TYPE ty_mcha_t.
+
+  IF control_record_in-idoctp NP 'ZADSGRE*'.
+    MESSAGE e029(e0) WITH control_record_in-idoctp ' '
+            'IDOC_OUTPUT_ZASDGRE' RAISING error_message_received.
+  ENDIF.
+
+* initialize HU data and buffers
+  CALL FUNCTION 'HU_PACKING_REFRESH'. "n_622661
+
+  PERFORM f_data_init.
+
+* read needed data
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+    EXPORTING
+      input  = object-objky   " C field
+    IMPORTING
+      output = g_vbeln.   " Internal display of INPUT, any category
+
+  PERFORM f_get_data
+    CHANGING
+        lt_pregre
+        lt_likp
+        lt_lips
+        lt_vbak
+        lt_vbap
+        lt_vbfa
+        lt_vbkd
+        lt_mcha.
+
+  PERFORM f_map_into_idoc
+    USING
+      lt_pregre
+      lt_likp
+      lt_lips
+      lt_vbak
+      lt_vbap
+      lt_vbfa
+      lt_vbkd
+      lt_mcha
+    CHANGING ls_testata
+             lt_posiz.
+
+  PERFORM f_controlli.   "??
+
+  control_record_out = control_record_in.
+
+  perform f_fill_edidd
+    using ls_testata
+          lt_posiz
+    CHANGING int_edidd[]
+             control_record_out.
+
+ENDFUNCTION.
+*---------------------------------------------------------------------*
+FORM f_data_init.
+  FREE: g_vbeln.
+
+ENDFORM.
+*---------------------------------------------------------------------*
+FORM f_get_data
+CHANGING
+    lt_pregre TYPE zpregre_t
+    lt_likp TYPE ty_likp_t
+    lt_lips TYPE ty_lips_t
+    lt_vbak TYPE ty_vbak_t
+    lt_vbap TYPE ty_vbap_t
+    lt_vbfa TYPE ty_vbfa_t
+    lt_vbkd TYPE ty_vbkd_t
+    lt_mcha TYPE ty_mcha_t.
+
+
+  SELECT
+   vbeln
+   inco1
+   aenam
+   werks
+  FROM likp
+  INTO TABLE lt_likp
+  WHERE vbeln = g_vbeln.   "numero consegna
+
+  SELECT
+    vbeln
+    posnr
+    matnr
+    werks
+    charg
+    lfimg
+    meins
+    vrkme
+    mbdat
+    aufnr
+  FROM lips
+  INTO TABLE lt_lips
+  WHERE vbeln = g_vbeln.
+
+  SELECT
+    ruuid
+    vbelv
+    posnv
+    vbeln
+    posnn
+    vbtyp_n
+  FROM vbfa
+  INTO TABLE lt_vbfa
+  WHERE
+    vbeln = g_vbeln AND
+    vbtyp_n = 'J'.
+
+  CHECK lt_vbfa IS NOT INITIAL.
+
+  SELECT
+    vbeln
+    aufnr
+  FROM vbak
+  INTO TABLE lt_vbak
+  FOR ALL ENTRIES IN lt_vbfa
+  WHERE vbeln = lt_vbfa-vbelv.
+
+  SELECT
+    vbeln
+    posnr
+    charg
+    meins
+    werks
+    aufnr
+  FROM vbap
+  INTO TABLE lt_vbap
+  FOR ALL ENTRIES IN lt_vbfa
+  WHERE vbeln = lt_vbfa-vbelv AND
+        posnr = lt_vbfa-posnv.
+
+  CHECK lt_vbak IS NOT INITIAL.
+
+  SELECT *
+  FROM zpregre
+  INTO TABLE lt_pregre
+  FOR ALL ENTRIES IN lt_vbak
+  WHERE
+    vbeln = lt_vbak-vbeln.
+
+  SELECT
+    vbeln
+    posnr
+    zterm
+    zlsch
+    prsdt
+    fkdat
+    bstkd
+    bstdk
+    bsark
+    ihrez
+    bstkd_e
+    bstdk_e
+    bsark_e
+    ihrez_e
+    posex_e
+  FROM vbkd
+  INTO TABLE lt_vbkd
+  FOR ALL ENTRIES IN lt_vbak
+  WHERE
+    vbeln = lt_vbak-vbeln.  "numero ordine
+
+  IF lt_lips IS NOT INITIAL.
+    SELECT
+      matnr
+      werks
+      charg
+      licha
+    FROM mcha
+    INTO TABLE lt_mcha
+    FOR ALL ENTRIES IN lt_lips
+    WHERE matnr = lt_lips-matnr.
+
+    SORT lt_mcha BY
+      matnr
+      werks
+      charg.
+  ENDIF.
+
+  SORT lt_pregre BY
+    vbeln
+    cposnr.
+
+  SORT lt_likp BY
+    vbeln.
+
+  SORT lt_vbfa BY
+    vbeln
+    vbtyp_n.
+
+  SORT lt_vbkd BY
+    vbeln
+    posnr.
+
+  SORT lt_lips BY
+    vbeln
+    posnr.
+
+  SORT lt_vbak BY
+    vbeln.
+
+  sort lt_vbap by
+    vbeln
+    posnr.
+ENDFORM.
+*---------------------------------------------------------------------*
+FORM f_controlli.
+
+ENDFORM.
+*---------------------------------------------------------------------*
+FORM  f_map_into_idoc
+    USING
+        lt_pregre TYPE zpregre_t
+        lt_likp TYPE ty_likp_t
+        lt_lips TYPE ty_lips_t
+        lt_vbak TYPE ty_vbak_t
+        lt_vbap TYPE ty_vbap_t
+        lt_vbfa TYPE ty_vbfa_t
+        lt_vbkd TYPE ty_vbkd_t
+        lt_mcha TYPE ty_mcha_t
+   CHANGING
+          ch_testata TYPE z1adsgre
+          ch_posiz TYPE z1adsgre_pt.
+
+  DATA: ls_pregre TYPE zpregre,
+        ls_vbap   TYPE ty_vbap,
+        ls_vbfa   TYPE ty_vbfa,
+        ls_vbak   TYPE ty_vbak,
+        ls_likp   TYPE ty_likp,
+        ls_vbkd   TYPE ty_vbkd,
+        ls_posiz  TYPE z1adsgre_p,
+        ls_mcha   TYPE ty_mcha,
+        l_tabix   TYPE sytabix.
+  FIELD-SYMBOLS:
+      <p> TYPE ty_lips.
+
+  LOOP AT lt_lips ASSIGNING <p>.
+    l_tabix = sy-tabix.
+    FREE: ls_vbfa.
+    READ TABLE lt_vbfa
+    INTO ls_vbfa
+    WITH KEY
+        vbeln = <p>-vbeln
+        vbtyp_n = 'J' BINARY SEARCH.
+    CHECK ls_vbfa IS NOT INITIAL.
+    FREE: ls_vbak.
+    READ TABLE lt_vbak
+    INTO ls_vbak
+    WITH KEY
+        vbeln = ls_vbfa-vbelv BINARY SEARCH.
+    free: ls_vbap.
+    read table lt_vbap
+    into ls_vbap
+    with key
+        vbeln = ls_vbfa-vbelv
+        posnr = ls_vbfa-posnv BINARY SEARCH.
+    FREE: ls_pregre.
+    READ TABLE lt_pregre
+    INTO ls_pregre
+    WITH KEY
+        vbeln = ls_vbap-vbeln
+        cposnr =  ls_vbap-posnr BINARY SEARCH.
+    CLEAR ls_likp.
+    READ TABLE lt_likp INTO ls_likp
+    WITH KEY
+        vbeln = <p>-vbeln BINARY SEARCH.
+    FREE: ls_vbkd.
+    READ TABLE lt_vbkd
+    INTO ls_vbkd
+    WITH KEY
+        vbeln = ls_vbap-vbeln
+        posnr = ls_vbap-posnr BINARY SEARCH.
+
+    IF ls_vbkd IS INITIAL.
+      READ TABLE lt_vbkd
+      INTO ls_vbkd
+      WITH KEY
+      vbeln = ls_vbap-vbeln
+      posnr = '000000' BINARY SEARCH.
+    ENDIF.
+
+    FREE: ls_mcha.
+    READ TABLE lt_mcha
+    INTO ls_mcha
+    WITH KEY
+        matnr = <p>-matnr
+        werks = <p>-werks
+        charg = <p>-charg BINARY SEARCH.
+
+    IF l_tabix EQ 1.
+      ch_testata-tprel = ls_pregre-tprel.
+      ch_testata-aufnr = ls_pregre-aufnr.
+      ch_testata-mfrpn = ls_pregre-mfrpn.
+      ch_testata-mfrpn   = ls_pregre-mfrpn.
+      ch_testata-menge   = ls_pregre-bdmng.
+      ch_testata-meins   = ls_pregre-meins.
+*        ch_testata-mbdat   =   "non significativo
+      ch_testata-inco1   = ls_pregre-inco1.
+      ch_testata-dest    = ls_pregre-dest .
+      ch_testata-werks   = ls_pregre-werks.
+*        ch_testata-pick    =   "non utilizzato
+      ch_testata-ncode   = ls_pregre-ncode.
+      ch_testata-nqty    = ls_pregre-nqty .
+
+      ch_testata-twmr    = <p>-vbeln.
+      ch_testata-chkuser = ls_likp-aenam.
+      ch_testata-ebeln   = ls_vbkd-bstkd_e.
+      ch_testata-ebelp   = ls_vbkd-posex_e.
+*        ch_testata-psmng   = ls_sum-psmng.
+      ch_testata-ddt_twm = <p>-vbeln.
+      ch_testata-tagl    = ls_pregre-tagl.
+      ch_testata-aufnr_s = ls_pregre-aufnr_s.
+      ch_testata-zdelete = ls_pregre-zdelete.
+    ENDIF.
+
+    ls_posiz-aufnr_p   = ls_pregre-aufnr.
+    ls_posiz-posnr_p   = <p>-posnr.
+    ls_posiz-mfrpn_p   = ls_pregre-mfrpn.
+    ls_posiz-menge_p   = <p>-lfimg.
+    ls_posiz-meins_p   = <p>-vrkme.
+    ls_posiz-charg_p   = <p>-charg.
+    ls_posiz-licha_p   = ls_mcha-licha.
+    ls_posiz-ebeln     = ls_vbkd-bstkd_e.
+    ls_posiz-ebelp     = ls_vbkd-posex_e.
+    ls_posiz-qta_inv_p = <p>-lfimg.
+    ls_posiz-um_inv_p  = <p>-vrkme.
+    ls_posiz-ddt_twm   = <p>-vbeln.
+
+    APPEND ls_posiz TO ch_posiz.
+    FREE: ls_posiz.
+
+  ENDLOOP.
+
+
+ENDFORM.
+*---------------------------------------------------------------------*
+FORM f_fill_edidd
+    using ls_testata type z1adsgre
+          lt_posiz type z1adsgre_pt
+     changing int_edidd type edidd_tt
+          control_record type edidc.
+
+data:
+        ls_edidd type edidd,
+        l_count type idocdsgnum value '000001'.
+field-symbols:
+        <pos> type z1adsgre_p.
+
+    ls_edidd-docnum = control_record-docnum.
+    ls_edidd-segnum = l_count.
+    ls_edidd-segnam = 'Z1ADSGRE'.
+    ls_edidd-sdata = ls_testata.
+
+    append ls_edidd to int_edidd.
+    free: ls_edidd.
+
+    loop at lt_posiz assigning <pos>.
+        free: ls_edidd.
+        add 1 to l_count.
+        ls_edidd-docnum = control_record-docnum.
+        ls_edidd-segnum = l_count.
+        ls_edidd-segnam = 'Z1ADSGRE_P'.
+        ls_edidd-sdata = <pos>.
+        append ls_edidd to int_edidd.
+    endloop.
+
+
+ENDFORM.
